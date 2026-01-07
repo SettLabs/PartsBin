@@ -172,7 +172,7 @@ public class ReStock {
         if( !lcsc.equalsIgnoreCase("None") && !lcsc.isEmpty() ) {
             var q = "SELECT * FROM lcsc_prices WHERE sku = '"+lcsc+"'";
             var result = lite.doSelect(q,false);
-            if( result.isPresent() && !result.get().isEmpty()) {
+            if( result.isPresent() && result.get().isEmpty()) {
                 // Gather price info
                 var prices = getSimplePriceInfo(workflow, lcsc, Lcsc.getSearchPage(lcsc));
                 if (!prices.isEmpty() && !prices.equalsIgnoreCase("None")) {
@@ -359,10 +359,15 @@ public class ReStock {
         var list = new ArrayList<String[]>();
         var insert = "INSERT INTO lcsc_prices (sku,moq,price,timestamp) VALUES (?,?,?,?);";
 
+        if(rs.isEmpty()) {
+            System.out.println("No missing LCSC prices in database.");
+            return;
+        }
         for( int a=0;a<rs.size();a++ ){
             var row = rs.get(a);
             var lcsc = String.valueOf(row.getFirst());
             var link = "https://www.lcsc.com/product-detail/"+lcsc+".html";
+            System.out.println("Prices for "+lcsc+"?");
             var ncb = workflow.executeCycle(link);
 
             if (ncb == null  ){
@@ -420,6 +425,10 @@ public class ReStock {
                 return;
 
             var price = bestPrice(db,getSelectQuery(quantity),sku,quantity);
+            if(price==null) {
+                System.out.println("No sku for "+mpn);
+                continue;
+            }
             full.add(price);
             var buy = Math.max(quantity,price.moq);
             var line = mpn+";"+price.sku+";"+quantity+";"+price.moq+";"+price.getSinglePrice()+";"+price.total+";"+buy+";"+(buy-quantity);
@@ -481,6 +490,11 @@ public class ReStock {
         if( results.size()==1)
             return results.getFirst();
 
+        if( results.isEmpty()){
+            System.err.println("No prices found for "+String.join(", ", sku));
+            return null;
+        }
+
         var cheapest = results.getFirst();
         // Loop through the rest of the list starting from the second item
         for (int i = 1; i < results.size(); i++) {
@@ -533,11 +547,11 @@ public class ReStock {
     }
     public static void main(String[] args) {
         //checkPrices(SQLiteDB.createDB("comps", Path.of("components.db")));
-        String filename="disfuse_rev0.csv";
+        String filename="burrowv3.csv";
        // processBom(filename);
-        gatherCost( filename.replace(".csv",""),1);
-        //var db = SQLiteDB.createDB("comps", Path.of("components.db"));
-        //fillInLcscTable(db);
+        gatherCost( filename.replace(".csv",""),10);
+       // var db = SQLiteDB.createDB("comps", Path.of("components.db"));
+       // fillInLcscTable(db);
     }
     private static class Price{
         String sku;
