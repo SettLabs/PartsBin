@@ -42,3 +42,4 @@ build/
 *.csv
 /.idea
 /.idea
+*.ods
