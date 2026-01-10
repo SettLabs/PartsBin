@@ -1,14 +1,18 @@
 package settlabs;
 
+import org.tinylog.Logger;
 import util.PartNumberWorkflow;
 import util.database.SQLiteDB;
 import util.math.MathUtils;
 import util.tools.FileTools;
 import util.tools.TimeTools;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 public class ReStock {
 
@@ -545,13 +549,28 @@ public class ReStock {
         }
         return list;
     }
+    public static void processPurchases(){
+        try (Stream<Path> stream = Files.list(Path.of("purchases"))) {
+            var db = SQLiteDB.createDB("comps", Path.of("components.db"));
+            List<Path> files = stream
+                    .filter(Files::isRegularFile)
+                    .filter( path -> path.toString().endsWith(".csv"))
+                    .toList();
+
+            files.forEach( file -> Lcsc.readOrderBom(file,db) );
+        } catch (IOException e) {
+            Logger.error("Error reading purchases directory",e);
+        }
+    }
     public static void main(String[] args) {
-        //checkPrices(SQLiteDB.createDB("comps", Path.of("components.db")));
-        String filename="burrowv3.csv";
+        // checkPrices(SQLiteDB.createDB("comps", Path.of("components.db")));
+       // String filename="burrowv3.csv";
        // processBom(filename);
-        gatherCost( filename.replace(".csv",""),10);
-       // var db = SQLiteDB.createDB("comps", Path.of("components.db"));
+       // gatherCost( filename.replace(".csv",""),10);
+
        // fillInLcscTable(db);
+        processPurchases();
+
     }
     private static class Price{
         String sku;
