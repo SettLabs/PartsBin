@@ -526,6 +526,23 @@ public class SQLDB extends Database implements TableInsert{
         }
         return Optional.of(data);
     }
+    public boolean hasResultSet(String table, String whereClause, String... data ){
+        if( !isValid(1) && !connect(false) ){
+            Logger.error( id+"(db) -> Couldn't connect to database: "+id);
+            return false;
+        }
+        String sql = String.format("SELECT 1 FROM %s WHERE %s LIMIT 1", table, whereClause);
+        try( PreparedStatement stmt = con.prepareStatement( sql ) ){
+            for( int a=0;a<data.length;a++ ){
+                stmt.setString(a+1, data[a]);
+            }
+            return stmt.executeQuery().next();
+        } catch (SQLException e) {
+            Logger.error(id+"(db) -> Error running query: "+sql+" -> "+e.getMessage());
+            System.out.println(id+"(db) -> Error running query: "+sql+" -> "+e.getMessage());
+        }
+        return false;
+    }
     public Optional<TableInsert> getTableInsert( String tableid ){
         int index = tableid.indexOf(":");
         if( index != -1)
