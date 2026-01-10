@@ -558,6 +558,7 @@ public class ReStock {
                     .toList();
 
             files.forEach( file -> Lcsc.readOrderBom(file,db) );
+            files.forEach( file -> Mouser.readOrderBom(file,db) );
         } catch (IOException e) {
             Logger.error("Error reading purchases directory",e);
         }
