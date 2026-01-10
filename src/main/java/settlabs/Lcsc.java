@@ -77,7 +77,7 @@ public class Lcsc {
 
         // Check if the order number is processed already
         if( db.hasResultSet( "purchases","ordernr = ?", orderNr ) ){
-            Logger.error("Order Number already in database, skipping.: "+orderNr );
+            Logger.info("Order Number already in database, skipping.: "+orderNr );
             return;
         }
 
