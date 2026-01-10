@@ -8,7 +8,7 @@ Needed something that can:
 - Subtract the bom from the stock or add an order to it.
 - ...
 
-Doesn't use web scraping (ToS issues) nor API (hard to get) but works by putting stuffing in the clipboard and waiting for the user to copy the wanted info.
+Doesn't use web scraping (ToS issues) nor API (hard to get) but works by putting links in the clipboard and waiting for the user to copy the wanted info.
 
 ## Works
 - Diptrace libs editing
