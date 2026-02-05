@@ -19,11 +19,11 @@ public class SQLiteUtils {
                 String regex = value_text(0);
                 // Argument 1: The string value to check (String)
                 String value = value_text(1);
-
+/*
                 System.out.println("--- REGEXP DEBUG START ---");
                 System.out.println("Pattern (Arg 0): " + regex);
                 System.out.println("Value (Arg 1): " + value);
-
+*/
                 // Check for NULL values before attempting to match
                 if (value == null || regex == null) {
                     result(0); // Return false if either is null
@@ -33,7 +33,7 @@ public class SQLiteUtils {
                 // --- 2. Perform the Java Regex Check ---
                 try {
                     boolean matches = value.matches(regex);
-                    System.err.println("Result:"+matches);
+                 //   System.err.println("Result:"+matches);
                     result(matches ? 1 : 0); // Return 1 for true, 0 for false
                 } catch (Exception e) {
                     // Handle potential regex errors gracefully

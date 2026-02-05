@@ -1,6 +1,16 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <Capacitors>
 	<database>
+		<query name="purchases">
+			INSERT INTO global (mpn, stock)
+			SELECT 
+			mpn,
+			SUM(quantity) as total_quantity
+			FROM purchases
+			GROUP BY mpn
+			ON CONFLICT(mpn) 
+			DO UPDATE SET stock = excluded.stock;
+		</query>
 		<table>
 		CREATE TABLE capacitors (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -9,7 +19,7 @@
 			description TEXT,
 			
 			-- Manufacturer Info
-			manufacturer_name TEXT NOT NULL,
+			mpn TEXT NOT NULL,
 			manufacturer TEXT NOT NULL,
 			
 			-- Supplier SKUs
@@ -38,10 +48,10 @@
 			last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			
 			-- Indexes for faster lookups
-			UNIQUE(manufacturer_name)
+			UNIQUE(mpn)
 		);
 		</table>
-		<columns>name,value,description,lcsc,manufacturer_name,manufacturer,esr,misc,tolerance,cap_at_12v,voltage_rating,dielectric,cap_at_3v3,cap_at_5v,ripple_current,mouser,cap_at_3v3,capacitance,farnell,enriched</columns>
+		<columns>name,value,description,lcsc,mpn,manufacturer,esr,misc,tolerance,cap_at_12v,voltage_rating,dielectric,cap_at_3v3,cap_at_5v,ripple_current,mouser,cap_at_3v3,capacitance,farnell,enriched</columns>
 	</database>
 	<muRata>
 		<Datasheet>

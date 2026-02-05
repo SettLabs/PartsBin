@@ -17,4 +17,4 @@ Doesn't use web scraping (ToS issues) nor API (hard to get) but works by putting
 - Export to a csv file containing suggested quantities
   - Determines quantity based on moq and total price (allow overflow)
   - Picks higher moq if price difference is less than 1€ (for passives)
-- Lcsc bom upload to database 
+- Lcsc,Mouser order export upload to database 

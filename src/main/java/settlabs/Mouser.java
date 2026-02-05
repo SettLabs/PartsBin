@@ -6,6 +6,7 @@ import com.opencsv.CSVReader;
 import com.opencsv.CSVReaderBuilder;
 import com.opencsv.exceptions.CsvValidationException;
 import org.tinylog.Logger;
+import util.PartNumberWorkflow;
 import util.database.SQLiteDB;
 import util.database.SqlTable;
 import util.tools.TimeTools;
@@ -16,9 +17,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 public class Mouser {
+    private static String insert = "INSERT INTO mouser_prices (sku,moq,price,timestamp) VALUES (?,?,?,?);";
 
     public static String getSearchPage( String sku ){
         return "https://www.mouser.be/c/?q="+ sku;
@@ -29,6 +32,7 @@ public class Mouser {
     public static String getSkuRegex(){
         return "^\\d{2,3}-[A-Za-z0-9\\-./]{2,}$";
     }
+
     public static ArrayList<String[]> processPrices(String sku, Map<String,String> prices){
         var prep = new ArrayList<String[]>();
         for( var set : prices.entrySet() ){
@@ -90,6 +94,30 @@ public class Mouser {
             throw new RuntimeException(e);
         }
     }
+    static boolean doPriceFind(PartNumberWorkflow workflow, SQLiteDB lite, String sku){
+        if( sku.equalsIgnoreCase("None") || sku.isEmpty() ){
+            return true;
+        }
+        var result = lite.doSelect( "SELECT * FROM mouser_prices WHERE sku = '"+sku+"'",false);
+        var good=false;
+        if( result.isPresent() && result.get().isEmpty()) {
+            var map = new LinkedHashMap<String, String>();
+            map.put("1", "");
+            map.put("10", "");
+            map.put("25", "");
+            map.put("100", "");
+            var done = ReStock.getSteppedPriceInfo(workflow, map, sku, Mouser.getSearchPage(sku));
+            if (done) {
+                var res = Mouser.processPrices(sku, map);
+                good=true;
+                res.forEach(row -> lite.doPreparedInsert(insert, row, true));
+            }else{
+                var data = new String[]{sku,"-1","-1", TimeTools.formatShortUTCNow()};
+                lite.doPreparedInsert(insert, data, true);
+            }
+        }
+        return good;
+    }
     private static void processOrderCSV(CSVReader csvReader, SqlTable table, String orderNr ) throws CsvValidationException, IOException {
         var header = csvReader.readNext();
         if( header == null ){
@@ -109,14 +137,14 @@ public class Mouser {
             Logger.error("No Quantity found for Mouser CSV file");
             return;
         }
-        int totalIndex = headerParts.indexOf("Price (EUR)");
+        int unitPrice = headerParts.indexOf("Price (EUR)");
         var currency="€";
-        if( totalIndex==-1 ) {
-            totalIndex = headerParts.indexOf("Price (DOLLAR)");
+        if( unitPrice==-1 ) {
+            unitPrice = headerParts.indexOf("Price (DOLLAR)");
             currency="$";
         }
 
-        if( totalIndex==-1 ) {
+        if( unitPrice==-1 ) {
             Logger.error("No Ext.Price found for Mouser CSV file");
             return;
         }
@@ -127,7 +155,7 @@ public class Mouser {
             var mpn = nextRecord[mpnIndex];
             var quantity = Integer.parseInt(nextRecord[quantityIndex]);
 
-            var totalPrice=nextRecord[totalIndex].replace(currency,"").trim().replace(",",".");
+            var totalPrice=nextRecord[unitPrice].replace(currency,"").trim().replace(",",".");
             var total=String.valueOf(Double.parseDouble(totalPrice)*quantity);
 
             var data = new String[]{mpn,orderNr,TimeTools.formatLongNow(),String.valueOf(quantity),total,currency};

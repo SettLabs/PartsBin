@@ -5,42 +5,41 @@ import util.PartNumberWorkflow;
 import util.database.SQLiteDB;
 import util.math.MathUtils;
 import util.tools.FileTools;
-import util.tools.TimeTools;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
-import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 public class ReStock {
 
     public static void checkGlobal( SQLiteDB db ){
+
         fillInSKU(db, Lcsc.getSearchPage(""),"lcsc",Lcsc.getSkuRegex());
         fillInSKU(db, Mouser.getSearchPage(""),"mouser",Mouser.getSkuRegex());
     }
 
     public static void fillInSKU(SQLiteDB db, String link, String supplier, String regex) {
-        System.out.println("Looking for SKU's for "+supplier);
+        Logger.info("Looking for SKU's for "+supplier);
 
         db.connect(false);
         db.addRegexFunction();  // Enable option to use regexp
 
         if (!db.isValid(1000)) { // Verify connection
-            System.err.println("No valid database connection");
+            Logger.error("No valid database connection");
             return;
         }
         // Do Query and verify there's a result
-        var selectSQL = "SELECT id, manufacturer_name, "+supplier+" FROM global WHERE "+supplier+" != 'None' AND REGEXP('"+regex+"', "+supplier+") = 0";
+        var selectSQL = "SELECT id, mpn, "+supplier+" FROM global WHERE "+supplier+" is null OR "+supplier+" != 'None' AND REGEXP('"+regex+"', "+supplier+") = 0";
         var res = db.doSelect(selectSQL);
         if( res.isEmpty() ) {
-            System.err.println("Query failed");
+            Logger.error("Query failed: "+selectSQL);
             return;
         }
         var data = res.get();
         if( data.isEmpty() ) {
-            System.out.println("No query results");
+            Logger.warn("No query results");
             return;
         }
 
@@ -50,29 +49,38 @@ public class ReStock {
 
         for( int a =0;a<data.size();a++ ){
             var l = data.get(a);
-            System.out.println("\n--- Processing Part " + (a+1) + " of " + data.size() + " ---");
             var mpn = String.valueOf(l.get(1));
+
+            Logger.info("\n--- Processing Part " + (a+1) + " of " + data.size() + " -> "+mpn);
 
             // Execute the copy-wait-read cycle
             var newClipboardContent = workflow.executeCycle(link + mpn);
             if (newClipboardContent == null  ){
-                System.out.println("Cycle failed or clipboard content was not text, trying again.");
+                Logger.error("Cycle failed or clipboard content was not text, trying again.");
                 a--;
                 continue;
             }
 
-            System.out.println("Final Result (New Content): " + newClipboardContent);
+            Logger.info("Final Result (New Content): " + newClipboardContent);
+            var sku = newClipboardContent.trim();
             if( newClipboardContent.matches(regex) ){ // Needs to match regex
-                System.out.println("Stored...");
-                list.add("UPDATE global SET "+supplier+" = '" + newClipboardContent.trim() + "' WHERE manufacturer_name ='" + mpn + "';");
-            }else if( newClipboardContent.equals("stop") ){ // Stop command chosen
-                System.out.println("Stopping...");
+                Logger.info("Stored...");
+                list.add("UPDATE global SET "+supplier+" = '" + sku + "' WHERE mpn ='" + mpn + "';");
+            }else if( sku.equals("stop") ){ // Stop command chosen
+                Logger.info("Stopping...");
                 break;
-            }else if( newClipboardContent.length()<=3 ){ // Skip command chosen
-                System.out.println("Skipping...");
-                list.add("UPDATE global SET "+supplier+" = 'None' WHERE manufacturer_name ='" + mpn + "';");
+            }else if( sku.length()<=3 ){ // Skip command chosen
+                Logger.info("Skipping...");
+                list.add("UPDATE global SET "+supplier+" = 'None' WHERE mpn ='" + mpn + "';");
+                continue;
             }else{
-                System.out.println("Failed Regex: "+newClipboardContent );
+                Logger.error("Failed Regex: "+newClipboardContent );
+            }
+
+            if(supplier.equals("lcsc")){
+                Lcsc.doPriceFind(workflow,db,sku);
+            }else if(supplier.equals("mouser")){
+                Mouser.doPriceFind(workflow,db,sku);
             }
             // Intermediate dump
             if( list.size()>10 ){
@@ -81,7 +89,7 @@ public class ReStock {
             }
         }
         db.doBatchRun(list);
-        System.out.println("\nAll part numbers processed.");
+        Logger.info("\nAll part numbers processed.");
     }
 
     public static void processBom( String bomFileName ){
@@ -95,36 +103,26 @@ public class ReStock {
         var colSplit = lines.removeFirst().replace("\",",";").replace("\"","").split(";");
         var colTitles = new ArrayList<>(List.of(colSplit));
 
-        int mpnIndex = colTitles.indexOf("Manufacturer name");
+        int mpnIndex = colTitles.indexOf("mpn");
         int mouserIndex = colTitles.indexOf("mouser");
         int lcscIndex = colTitles.indexOf("LCSC");
         int qIndex = colTitles.indexOf("Quantity");
 
         if( mpnIndex==-1 ){
-            System.err.println("No manufacturer name column found!");
+            Logger.error("No manufacturer name column found!");
             return;
         }
         if( qIndex==-1 ){
-            System.err.println("No quantity column found!");
+            Logger.error("No quantity column found!");
             return;
         }
         var name = bomFileName.substring(0,bomFileName.indexOf("."));
         var db = SQLiteDB.createDB("comps", Path.of("components.db"));
         db.connect(false);
 
-        boolean found=false;
-        int a=0;
-        var suffix="";
-        while(!found){
-            var exists = db.doSelect("SELECT * FROM bom where boardname='"+name+suffix+"'");
-            if( exists.isPresent() && !exists.get().isEmpty()) {
-                a++;
-                suffix = "_" + a;
-            }else{
-                found=true;
-            }
-        }
-        name += suffix;
+        // Remove old entry
+        db.doInsert("delete from bom where boardname='"+name+"'");
+
         // Process bom
         for( var bomLine : lines ){
             var cols = bomLine.replace("\",",";").replace("\"","").split(";");
@@ -135,166 +133,96 @@ public class ReStock {
             var mouser = mouserIndex>=cols.length?"":cols[mouserIndex];
             var lcsc = lcscIndex>=cols.length?"":cols[lcscIndex];
             if( !addToGlobal(db,mpn,mouser,lcsc,"" ) ) // Add component to global one
-                System.out.println("Already in global: "+mpn);
+                Logger.info("Already in global: "+mpn);
             //Insert new data
             var items = new String[]{name, mpn, qIndex >= cols.length ? "0" : cols[qIndex]};
-            var insert ="INSERT into bom (boardname,manufacturer_name,quantity) VALUES (?,?,?);";
+            var insert ="INSERT into bom (boardname,mpn,quantity) VALUES (?,?,?);";
             if( !db.doPreparedInsert( insert,items ) )
-                System.err.println("Insert failed for "+mpn+ " -> "+insert);
+                Logger.error("Insert failed for "+mpn+ " -> "+insert);
         }
         db.finish();
     }
 
     private static boolean addToGlobal(SQLiteDB lite, String mpn, String mouser, String lcsc, String other ){
-        var opt = lite.doSelect( "SELECT * FROM global WHERE manufacturer_name='"+mpn+"';");
+        var opt = lite.doSelect( "SELECT mouser,lcsc,other FROM global WHERE mpn='"+mpn+"';");
         if( opt.isEmpty() )// query failed
             return false;
-        var resSet = opt.get();
-        if( !resSet.isEmpty() )
-            return false;
+        var res = opt.get();
+
+        if(other.isEmpty())
+            other="None";
+
+        if( !res.isEmpty()) {
+            var select = res.getFirst();
+            mouser=mouser.isEmpty()?String.valueOf(select.get(0)):mouser;
+            lcsc=lcsc.isEmpty()?String.valueOf(select.get(1)):lcsc;
+            other=other.isEmpty()?String.valueOf(select.get(2)):other;
+        }
 
         PartNumberWorkflow workflow = new PartNumberWorkflow();
-        var insert = "INSERT INTO manu_prices (sku,moq,price,timestamp) VALUES (?,?,?,?);";
+        boolean skuAdded = false;
 
         // Check if sku's are present.
         if( mouser.isEmpty() ){ // No mouser present
-            var sku = getSkuInfo(workflow, Mouser.getSearchPage(mpn), Mouser.getSkuRegex());
-            if (!sku.isEmpty())
+            var sku = getSkuInfo(workflow, Mouser.getSearchPage(mpn),mpn, Mouser.getSkuRegex());
+            if (!sku.isEmpty()) {
                 mouser = sku;
-        }
-        if( !mouser.equalsIgnoreCase("None") && !mouser.isEmpty() ) {
-            // Gather price info
-            doMouserPrice(workflow,lite,insert,mouser);
-        }
-        if( lcsc.isEmpty() ) { // No lcsc present
-            // Get sku
-            var sku = getSkuInfo(workflow, Lcsc.getSearchPage(mpn), Lcsc.getSkuRegex());
-            if (!sku.isEmpty())
-                lcsc = sku;
-        }
-
-        if( !lcsc.equalsIgnoreCase("None") && !lcsc.isEmpty() ) {
-            var q = "SELECT * FROM lcsc_prices WHERE sku = '"+lcsc+"'";
-            var result = lite.doSelect(q,false);
-            if( result.isPresent() && result.get().isEmpty()) {
-                // Gather price info
-                var prices = getSimplePriceInfo(workflow, lcsc, Lcsc.getSearchPage(lcsc));
-                if (!prices.isEmpty() && !prices.equalsIgnoreCase("None")) {
-                    var res = Lcsc.processPrices(lcsc, prices);
-                    res.forEach(row -> lite.doPreparedInsert(insert.replace("manu", "lcsc"), row, true));
-                }
+                skuAdded = true;
             }
         }
+        Mouser.doPriceFind(workflow,lite,mouser);
 
-        if( resSet.isEmpty() ) {// Not in global yet, so add it
-            var insertGlobal = "INSERT INTO global (manufacturer_name,mouser,lcsc, other) VALUES (?,?,?,?);";
+        if( lcsc.isEmpty() ) { // No lcsc present
+            // Get sku
+            var sku = getSkuInfo(workflow, Lcsc.getSearchPage(mpn),mpn, Lcsc.getSkuRegex());
+            if (!sku.isEmpty()) {
+                lcsc = sku;
+                skuAdded = true;
+            }
+        }
+        Lcsc.doPriceFind(workflow,lite,lcsc);
+
+        if( opt.get().isEmpty() ) {// Not in global yet, so add it
+            var insertGlobal = "INSERT INTO global (mpn,mouser,lcsc, other) VALUES (?,?,?,?);";
             var data = new String[]{mpn,mouser,lcsc,other};
             if( !lite.doPreparedInsert( insertGlobal,data ) )
-                System.err.println("Insert failed for "+mpn+ " -> "+insertGlobal);
+                Logger.error("Insert failed for "+mpn+ " -> "+insertGlobal);
+        }else if(skuAdded){
+            var updateGlobal = "UPDATE global SET mouser=?,lcsc=?, other=? WHERE mpn='"+mpn+"';";
+            var data = new String[]{mouser,lcsc,other};
+            if( !lite.doPreparedInsert( updateGlobal,data ) )
+                Logger.error("Update failed for "+mpn+ " -> "+updateGlobal);
         }
         lite.commit();
         return true;
     }
-    public static void checkPrices( SQLiteDB db ){
-        PartNumberWorkflow workflow = new PartNumberWorkflow();
-        var insert = "INSERT INTO manu_prices (sku,moq,price,timestamp) VALUES (?,?,?,?);";
 
-        var search = """
-                SELECT
-                  g.mouser
-                FROM
-                  global g
-                WHERE
-                    g.mouser NOT IN (SELECT sku FROM mouser_prices) AND g.mouser != 'None';
-                """;
-        var res = db.doSelect(search);
-        if( res.isPresent() ){
-            for( var line : res.get()) {
-                var sku = String.valueOf(line.getFirst());
-                var ok = doMouserPrice(workflow, db, insert, sku);
-                if( !ok ){
-                    db.doInsert("UPDATE global SET mouser = 'None' WHERE mouser ='" + sku + "';");
-                    db.commit();
-                }
-            }
-        }
-
-        res = db.doSelect(search.replace("mouser","lcsc"));
-        if( res.isPresent() ){
-            for( var line : res.get()) {
-                var sku = String.valueOf(line.getFirst());
-                var ok = doLcscPrice(workflow, db, insert, sku);
-                if( !ok ){
-                    db.doInsert("UPDATE global SET lcsc = 'None' WHERE lcsc ='" + sku + "';");
-                    db.commit();
-                }
-            }
-        }
-    }
-    private static boolean doMouserPrice( PartNumberWorkflow workflow, SQLiteDB lite, String insert, String sku ){
-        var result = lite.doSelect( "SELECT * FROM mouser_prices WHERE sku = '"+sku+"'",false);
-        var good=false;
-        if( result.isPresent() && result.get().isEmpty()) {
-            var map = new LinkedHashMap<String, String>();
-            map.put("1", "");
-            map.put("10", "");
-            map.put("25", "");
-            map.put("100", "");
-            var done = getSteppedPriceInfo(workflow, map, sku, Mouser.getSearchPage(sku));
-            if (done) {
-                var res = Mouser.processPrices(sku, map);
-                good=true;
-                res.forEach(row -> lite.doPreparedInsert(insert.replace("manu", "mouser"), row, true));
-            }else{
-                var data = new String[]{sku,"-1","-1", TimeTools.formatShortUTCNow()};
-                lite.doPreparedInsert(insert.replace("manu", "mouser"), data, true);
-            }
-        }
-        return good;
-    }
-    private static boolean doLcscPrice( PartNumberWorkflow workflow, SQLiteDB lite, String insert, String sku ){
-        var result = lite.doSelect( "SELECT * FROM lcsc_prices WHERE sku = '"+sku+"'",false);
-        var good=false;
-        if( result.isPresent() && result.get().isEmpty()) {
-
-            var prices = getSimplePriceInfo(workflow, sku, Lcsc.getSearchPage(sku));
-            if (prices.isEmpty()) {
-                var data = new String[]{sku,"-1","-1", TimeTools.formatShortUTCNow()};
-                lite.doPreparedInsert(insert.replace("manu", "mouser"), data, true);
-            }else if( !prices.equals("None")){
-                var res = Lcsc.processPrices(sku, prices);
-                good=true;
-                res.forEach(row -> lite.doPreparedInsert(insert.replace("manu", "lcsc"), row, true));
-            }
-        }
-        return good;
-    }
-    private static String getSimplePriceInfo(PartNumberWorkflow workflow, String what, String link){
+    static String getSimplePriceInfo(PartNumberWorkflow workflow, String what, String link){
         while( true ) {
-            System.out.println("What is the price for "+what + "?");
+            Logger.info("What is the price for "+what + "?");
             var ncb = workflow.executeCycle(link);
             if (ncb != null) {
                 if (ncb.equals("stop")) { // Stop command chosen
                     return "None";
                 } else if (ncb.length() <= 3) { // Skip command chosen
-                    System.out.println("Skipped...");
+                    Logger.info("Skipped...");
                     return "";
                 } else {
-                    System.out.println("Stored...");
+                    Logger.info("Stored...");
                     return ncb;
                 }
             }else{
-                System.out.println("Cycle failed or clipboard content was not text, trying again.");
+                Logger.error("Cycle failed or clipboard content was not text, trying again.");
             }
         }
     }
-    private static boolean getSteppedPriceInfo(PartNumberWorkflow workflow, Map<String,String> map, String what, String link){
+    static boolean getSteppedPriceInfo(PartNumberWorkflow workflow, Map<String, String> map, String what, String link){
         var old="";
         for( var set : map.entrySet() ){
-            System.out.print("What is the price for "+set.getKey() + " moq "+what );
+            Logger.info("What is the price for "+set.getKey() + " moq "+what );
             var ncb = workflow.executeCycle(link);
             if (ncb == null) {
-                System.out.println("Cycle failed or clipboard content was not text, trying again.");
+                Logger.error("Cycle failed or clipboard content was not text, trying again.");
                 ncb = workflow.executeCycle(link);
                if( ncb==null)
                    return false;
@@ -302,14 +230,14 @@ public class ReStock {
             if (ncb.equals("stop")) { // Stop command chosen
                 return false;
             } else if (ncb.length() <= 2) { // Skip command chosen
-                System.out.println("  Skipped: "+set.getKey()+ " -> "+ncb);
+                Logger.info("  Skipped: "+set.getKey()+ " -> "+ncb);
             } else {
                 ncb = ncb.replaceAll("[\\s+€]+", "");
                 ncb = ncb.replace(",",".");
                 if( ncb.equals(old)){
-                    System.out.println("  Skipped: "+set.getKey()+ " -> "+ncb);
+                    Logger.info("  Skipped: "+set.getKey()+ " -> "+ncb);
                 }else{
-                    System.out.println("  Stored: "+set.getKey()+ " -> "+ncb);
+                    Logger.info("  Stored: "+set.getKey()+ " -> "+ncb);
                     map.put(set.getKey(),ncb);
                 }
 
@@ -318,38 +246,37 @@ public class ReStock {
         System.out.println("SKU done!");
         return true;
     }
-    public static String getSkuInfo( PartNumberWorkflow workflow, String link, String regex){
+    public static String getSkuInfo( PartNumberWorkflow workflow, String link,String mpn, String regex){
         while(true) {
-            System.out.println("Waiting for sku info...");
+            Logger.info("Waiting for sku info for "+mpn+" ...");
             var newClipboardContent = workflow.executeCycle(link);
 
             if (newClipboardContent == null) {
                 System.out.println("Cycle failed or clipboard content was not text, trying again.");
                 continue;
             }
-            System.out.println("Final Result (New Content): " + newClipboardContent);
+            System.out.println("Final Result (New Content): "+mpn+"=>" + newClipboardContent);
             if (newClipboardContent.matches(regex)) { // Needs to match regex
-                System.out.println("Stored...");
                 return newClipboardContent.trim();
             } else if (newClipboardContent.equals("stop")) { // Stop command chosen
-                System.out.println("Stopping...");
+                Logger.info("Stopping...");
                 return "";
             } else if (newClipboardContent.length() <= 3) { // Skip command chosen
-                System.out.println("Skipping...");
+                Logger.info("Skipping...");
                 return "None";
             } else {
-                System.out.println("Failed Regex: " + newClipboardContent);
+                Logger.error("Failed Regex: " + newClipboardContent);
             }
         }
     }
-
+/*
     private static void fillInLcscTable(SQLiteDB db){
 
         db.connect(false);
 
         // Get lcsc from global that isn't in lcsc
         var query = """
-                SELECT g.lcsc, g.manufacturer_name
+                SELECT g.lcsc, g.mpn
                 FROM global g
                 LEFT JOIN lcsc_prices l ON g.lcsc = l.sku
                 WHERE l.sku IS NULL AND g.lcsc != 'None';
@@ -403,10 +330,17 @@ public class ReStock {
                 db.doPreparedInsert(insert,list.removeFirst(),false);
             db.commit();
         }
-    }
+    }*/
     public static void gatherCost(String bom, int multiple){
         var db = SQLiteDB.createDB("comps", Path.of("components.db"));
-        var res = db.doSelect("SELECT * FROM bom WHERE boardname='"+bom+"'");
+        var table="bom WHERE boardname='"+bom+"'";
+        int offset=1;
+        if( bom.equals("combined")) {
+            table = "combined_bom";
+            offset=0;
+        }
+        var res = db.doSelect("SELECT * FROM "+table);
+
         if( res.isEmpty())
             return;
         String filename=bom+"_cost"+multiple+".csv";
@@ -420,31 +354,51 @@ public class ReStock {
 
         var rows = res.get();
         var full = new ArrayList<Price>();
-        FileTools.appendToTxtFile(target,"MPN;SKU;Need;MOQ;Unit Price;Total;Bought;Overflow"+System.lineSeparator());
+        var joinOrder = new StringJoiner(System.lineSeparator());
+        var joinSkip = new StringJoiner(System.lineSeparator());
+        joinOrder.add("MPN;SKU;Need;Stock;MOQ;Unit Price;To buy;Total;Overflow");
         for( var row : rows ){
-            var mpn = row.get(1);
-            var quantity = Integer.parseInt(String.valueOf(row.get(2)))*multiple;
-            var sku = selectSingleRow(db,"SELECT mouser,lcsc,other FROM global WHERE manufacturer_name='"+mpn+"';");
-            if( sku.length==0)
-                return;
-
-            var price = bestPrice(db,getSelectQuery(quantity),sku,quantity);
+            var mpn = String.valueOf(row.get(offset));
+            var quantity = Integer.parseInt( String.valueOf(row.get(offset+1)) )*multiple;
+            var sku = selectSingleRow(db,"SELECT mouser,lcsc,other,stock FROM global WHERE mpn='"+mpn+"';");
+            if( sku.length==0) {
+                Logger.error("No valid response looking for "+mpn+ ", trying to add it");
+                addToGlobal(db,mpn,"","","");
+                sku = selectSingleRow(db,"SELECT mouser,lcsc,other,stock FROM global WHERE mpn='"+mpn+"';");
+                if( sku.length==0)
+                    return;
+            }
+            var stock = Integer.parseInt(sku[3]);
+            if( stock<0 ){ // make sure it's positive
+                stock=0;
+            }
+            var need = quantity-stock;
+            if( need < 0 ){
+                need=0;
+            }
+            var price = bestPrice(  db,getSelectQuery(need),sku,need);
             if(price==null) {
-                System.out.println("No sku for "+mpn);
+                Logger.error("No price info for "+mpn);
                 continue;
             }
             full.add(price);
-            var buy = Math.max(quantity,price.moq);
-            var line = mpn+";"+price.sku+";"+quantity+";"+price.moq+";"+price.getSinglePrice()+";"+price.total+";"+buy+";"+(buy-quantity);
-            System.out.println(line);
-            FileTools.appendToTxtFile(target,line+System.lineSeparator());
+            var buy = Math.max(need,price.moq);
+            var line = mpn+";"+price.sku+";"+quantity+";"+stock+";"+price.moq+";"+price.getSinglePrice()+";"+buy+";"+price.total+";"+(buy-need);
+            if( buy==0){
+                joinSkip.add(line);
+            }else{
+                joinOrder.add(line);
+            }
+            Logger.info(line);
         }
+        joinOrder.add(joinSkip.toString());
+        FileTools.appendToTxtFile(target,joinOrder.toString());
 
         double total=0;
         for( var p : full)
             total+=p.total;
         total =MathUtils.roundDouble(total/multiple,2);
-        System.out.println("Total per board: "+total);
+        Logger.info("Total per board: "+total);
     }
 
     private static String getSelectQuery(int quantity) {
@@ -485,6 +439,9 @@ public class ReStock {
     private static Price bestPrice( SQLiteDB db, String prices, String[] sku, int quantity){
         var results = new ArrayList<Price>();
 
+        if( quantity==0 ){
+            return new Price("");
+        }
         results.addAll( bestSupplierPrice(db, prices, "mouser",sku[0]) );
         results.addAll( bestSupplierPrice(db, prices, "lcsc",sku[1]) );
         results.addAll( bestSupplierPrice(db, prices, "other",sku[2]) );
@@ -495,7 +452,7 @@ public class ReStock {
             return results.getFirst();
 
         if( results.isEmpty()){
-            System.err.println("No prices found for "+String.join(", ", sku));
+            Logger.error("No prices found for "+String.join(", ", sku));
             return null;
         }
 
@@ -563,23 +520,30 @@ public class ReStock {
             Logger.error("Error reading purchases directory",e);
         }
     }
+    public static void fillStock(SQLiteDB db){
+        var q = "SELECT mpn,quantity from purchases;";
+    }
     public static void main(String[] args) {
-        // checkPrices(SQLiteDB.createDB("comps", Path.of("components.db")));
-       // String filename="burrowv3.csv";
-       // processBom(filename);
-       // gatherCost( filename.replace(".csv",""),10);
+        processPurchases();
+        //checkGlobal(SQLiteDB.createDB("comps", Path.of("components.db")));
+         //String filename="buffer_rev2.csv";
+         //processBom(filename);
+         gatherCost( "combined",2);
 
        // fillInLcscTable(db);
-        processPurchases();
+
 
     }
     private static class Price{
         String sku;
-        int moq;
-        int min_moq;
-        double singlePrice;
-        double total;
+        int moq=0;
+        int min_moq=0;
+        double singlePrice=0;
+        double total=0;
 
+        public Price(String sku){
+            this.sku=sku;
+        }
         public Price( String sku, String moq, int min_moq, String sp ){
             this.sku=sku;
             this.moq = Integer.parseInt(moq);

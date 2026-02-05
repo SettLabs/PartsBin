@@ -6,6 +6,7 @@ import com.opencsv.CSVReader;
 import com.opencsv.CSVReaderBuilder;
 import com.opencsv.exceptions.CsvValidationException;
 import org.tinylog.Logger;
+import util.PartNumberWorkflow;
 import util.database.SQLiteDB;
 import util.database.SqlTable;
 import util.tools.TimeTools;
@@ -19,6 +20,8 @@ import java.util.Arrays;
 
 public class Lcsc {
 
+    private static final String insert = "INSERT INTO lcsc_prices (sku,moq,price,timestamp) VALUES (?,?,?,?);";
+
     public static ArrayList<String[]> processPrices(String sku, String prices){
         // Cleanup
         prices = prices.replace("\n\t","\t");
@@ -30,9 +33,36 @@ public class Lcsc {
         var prep = new ArrayList<String[]>();
         for( var moq : split ){
             var all = moq.split("/");
+            if( all.length < 2 ){
+                return prep;
+            }
             prep.add( new String[]{sku,all[0],all[1], TimeTools.formatShortUTCNow()}); // Don't need multiplication
         }
         return prep;
+    }
+    static boolean doPriceFind(PartNumberWorkflow workflow, SQLiteDB lite, String sku){
+        if( sku.equalsIgnoreCase("None") || sku.isEmpty() ){
+            Logger.info("No valid LCSC sku, skipping");
+            return true;
+        }
+
+        var result = lite.doSelect( "SELECT * FROM lcsc_prices WHERE sku = '"+sku+"'",false);
+
+        var good=false;
+        if( result.isPresent() && result.get().isEmpty()) {
+            var prices = ReStock.getSimplePriceInfo(workflow, sku, Lcsc.getSearchPage(sku));
+            if (prices.isEmpty()) {
+                var data = new String[]{sku,"-1","-1", TimeTools.formatShortUTCNow()};
+                lite.doPreparedInsert(insert, data, true);
+            }else if( !prices.equals("None")){
+                var res = Lcsc.processPrices(sku, prices);
+                good=true;
+                res.forEach(row -> lite.doPreparedInsert(insert, row, true));
+            }
+        }else{
+            Logger.info("Already have LCSC prices, skipping "+sku);
+        }
+        return good;
     }
     public static String getSearchPage( String sku ){
         return"https://www.lcsc.com/search?q="+ sku;
@@ -42,10 +72,6 @@ public class Lcsc {
     }
     public static String getSkuRegex(){
         return "C\\d{4,}[-]?\\d*";
-    }
-    private static void fillIn(SQLiteDB db) {
-        var link = "https://www.lcsc.com/search?q=";
-        //fillInSKU(db, link,"lcsc",getSkuRegex());
     }
     public static void readOrderBom( Path file, SQLiteDB db ){
         Logger.info("Reading LCSC order bom from " + file.toString());
